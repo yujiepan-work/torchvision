@@ -1,3 +1,4 @@
+wandb/
 build/
 dist/
 torchvision.egg-info/

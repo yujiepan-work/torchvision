@@ -14,15 +14,20 @@ from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.transforms.functional import InterpolationMode
 
+try:
+    import wandb
+    has_wandb = True
+except ImportError: 
+    has_wandb = False
 
-def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
+def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None, log_wandb=False):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
     metric_logger.add_meter("img/s", utils.SmoothedValue(window_size=10, fmt="{value}"))
 
     header = f"Epoch: [{epoch}]"
-    for i, (image, target) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+    for i, (image, target) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header, log_wandb)):
         start_time = time.time()
         image, target = image.to(device), target.to(device)
         with torch.cuda.amp.autocast(enabled=scaler is not None):
@@ -98,7 +103,7 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
     metric_logger.synchronize_between_processes()
 
     print(f"{header} Acc@1 {metric_logger.acc1.global_avg:.3f} Acc@5 {metric_logger.acc5.global_avg:.3f}")
-    return metric_logger.acc1.global_avg
+    return metric_logger.acc1.global_avg, metric_logger.acc5.global_avg, metric_logger.loss.global_avg
 
 
 def _get_cache_path(filepath):
@@ -185,6 +190,12 @@ def main(args):
 
     utils.init_distributed_mode(args)
     print(args)
+
+    log_wandb=False
+    if utils.is_main_process() and args.test_only is False:
+        if has_wandb is True and args.wandb_id is not None:
+            wandb.init(project=os.getenv("WANDB_PROJECT", "torchvision-train"), name=args.wandb_id, config=args)
+            log_wandb=True
 
     device = torch.device(args.device)
 
@@ -338,14 +349,38 @@ def main(args):
 
     print("Start training")
     start_time = time.time()
+    step_per_epoch = len(data_loader)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
+        train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler, log_wandb=log_wandb)
         lr_scheduler.step()
-        evaluate(model, criterion, data_loader_test, device=device, print_freq=args.print_freq)
+        eval_acc1, eval_acc5, eval_loss = evaluate(model, criterion, data_loader_test, device=device, print_freq=args.print_freq)
+        
+        if log_wandb is True:
+            global_step = (epoch+1)*step_per_epoch
+            wandb_dict = {
+                    "eval/global_step": global_step,
+                    "eval/end_of_epoch": epoch,
+                    "eval/top1": eval_acc1,
+                    "eval/top5": eval_acc5,
+                    "eval/loss": eval_loss
+            }
+            wandb.log(data=wandb_dict, step=global_step)
+        
         if model_ema:
-            evaluate(model_ema, criterion, data_loader_test, device=device, print_freq=args.print_freq, log_suffix="EMA")
+            ema_acc1, ema_acc5, ema_loss = evaluate(model_ema, criterion, data_loader_test, device=device, print_freq=args.print_freq, log_suffix="EMA")
+            if log_wandb is True:
+                global_step = (epoch+1)*step_per_epoch
+                wandb_dict = {
+                        "ema/global_step": global_step,
+                        "ema/end_of_epoch": epoch,
+                        "ema/top1": ema_acc1,
+                        "ema/top5": ema_acc5,
+                        "ema/loss": ema_loss
+                }
+                wandb.log(data=wandb_dict, step=global_step)
+        
         if args.output_dir:
             checkpoint = {
                 "model": model_without_ddp.state_dict(),
@@ -492,7 +527,8 @@ def get_args_parser(add_help=True):
         "--ra-reps", default=3, type=int, help="number of repetitions for Repeated Augmentation (default: 3)"
     )
     parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
-
+    parser.add_argument('--wandb_id', default=None, type=str, 
+                        help='run identifier for wandb dashboard')
     return parser
 
 

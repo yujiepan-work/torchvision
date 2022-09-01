@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
-
+import wandb
 
 class SmoothedValue:
     """Track a series of values and provide access to smoothed values over a
@@ -98,10 +98,18 @@ class MetricLogger:
     def add_meter(self, name, meter):
         self.meters[name] = meter
 
-    def log_every(self, iterable, print_freq, header=None):
+    def log_every(self, iterable, print_freq, header=None, log_wandb=False):
         i = 0
+        bTest = False
         if not header:
             header = ""
+        else:
+            if 'Test' in header:
+                bTest=True
+            else:
+                epoch = int(header.split(']')[0].split('[')[-1])
+                step_per_epoch = len(iterable)
+
         start_time = time.time()
         end = time.time()
         iter_time = SmoothedValue(fmt="{avg:.4f}")
@@ -149,6 +157,18 @@ class MetricLogger:
                             i, len(iterable), eta=eta_string, meters=str(self), time=str(iter_time), data=str(data_time)
                         )
                     )
+
+                if log_wandb is True and header is not None and bTest is False:
+                    global_step = epoch*step_per_epoch + i
+                    wandb_dict = {
+                        "train/global_step": global_step,
+                        "train/epoch": global_step/step_per_epoch,
+                        "train/lr": self.meters['lr'].value,
+                        "train/loss": self.meters['loss'].value,
+                        # "train/mem": memory_used
+                    }
+                    wandb.log(data=wandb_dict, step=global_step)
+
             i += 1
             end = time.time()
         total_time = time.time() - start_time
