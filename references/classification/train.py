@@ -14,6 +14,11 @@ from torch import nn
 from torch.utils.data.dataloader import default_collate
 from torchvision.transforms.functional import InterpolationMode
 
+import shutil
+from nncf import NNCFConfig
+from nncf.torch import register_default_init_args
+from nncf.torch import create_compressed_model
+
 try:
     import wandb
 
@@ -23,20 +28,41 @@ except ImportError:
 
 
 def train_one_epoch(
-    model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None, log_wandb=False
+    model,
+    criterion,
+    optimizer,
+    data_loader,
+    device,
+    epoch,
+    args,
+    model_ema=None,
+    scaler=None,
+    log_wandb=False,
+    compression_ctrl=None,
 ):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
     metric_logger.add_meter("img/s", utils.SmoothedValue(window_size=10, fmt="{value}"))
-
     header = f"Epoch: [{epoch}]"
+
+    if compression_ctrl:
+        compression_ctrl.scheduler.epoch_step()
+
     for i, (image, target) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header, log_wandb)):
         start_time = time.time()
         image, target = image.to(device), target.to(device)
+
+        if compression_ctrl:
+            compression_ctrl.scheduler.step()
+
         with torch.cuda.amp.autocast(enabled=scaler is not None):
             output = model(image)
-            loss = criterion(output, target)
+            main_loss = criterion(output, target)
+            loss = main_loss
+            if compression_ctrl:
+                compression_loss = compression_ctrl.loss()
+                loss = loss + compression_loss  # do not use `+=` operator otherwise `main_loss` is also changed
 
         optimizer.zero_grad()
         if scaler is not None:
@@ -240,10 +266,23 @@ def main(args):
 
     print("Creating model")
     model = torchvision.models.__dict__[args.model](weights=args.weights, num_classes=num_classes)
+    # model = torchvision.models.resnet18(pretrained=True)
     model.to(device)
+    print(model)
+
+    compression_ctrl = None
+    if args.nncf_config is not None:
+        nncf_config = NNCFConfig.from_json(args.nncf_config)
+        nncf_config['log_dir'] = args.output_dir
+        if utils.is_main_process():
+            shutil.copy(args.nncf_config, args.output_dir)
+        nncf_config = register_default_init_args(
+            nncf_config=nncf_config, train_loader=data_loader
+        )  # TODO: distributed_callbacks and execution_parameters
+        compression_ctrl, model = create_compressed_model(model, nncf_config)
 
     if args.distributed and args.sync_bn:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # TODO: nncf with syncBN
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
@@ -318,6 +357,8 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+        if compression_ctrl:
+            compression_ctrl.distributed()
 
     model_ema = None
     if args.model_ema:
@@ -363,7 +404,17 @@ def main(args):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         train_one_epoch(
-            model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler, log_wandb=log_wandb
+            model=model,
+            criterion=criterion,
+            optimizer=optimizer,
+            data_loader=data_loader,
+            device=device,
+            epoch=epoch,
+            args=args,
+            model_ema=model_ema,
+            scaler=scaler,
+            log_wandb=log_wandb,
+            compression_ctrl=compression_ctrl,
         )
         lr_scheduler.step()
         eval_acc1, eval_acc5, eval_loss = evaluate(
@@ -546,6 +597,7 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "--max_steps", default=-1, type=int, help="max number of steps per epoch, -1 means disabled (default -1)"
     )
+    parser.add_argument("--nncf_config", default=None, type=str, help="path to nncf config json file")
     return parser
 
 

@@ -17,7 +17,7 @@ CONDAENV=jpqd-vit
 WORKDIR=$PROJROOT/torchvision/references/classification
 OUTROOT=$PROJROOT/LOGS/ww37
 
-NNCFCFG=nncf_configs/vit_b_16.json
+NNCFCFG=nncf_configs/vit_b_16_debug.json
 NNCFCFG_DEBUG=$NNCFCFG
 RUNID=$time-vit
 
@@ -55,7 +55,9 @@ cmd="train.py \
     --output-dir $OUTDIR \
     --data-path $DATAPATH \
     --wandb_id $RUNID "
-# cmd="$cmd --weights ViT_B_16_Weights.IMAGENET1K_V1 "
+cmd="$cmd --weights ViT_B_16_Weights.IMAGENET1K_V1 "
+cmd="$cmd --nncf_config $NNCFCFG "
+# cmd="$cmd --test-only"
 
 if [[ $2 == "" || $2 == "1" ]]; then
     cmd="torchrun $cmd"
