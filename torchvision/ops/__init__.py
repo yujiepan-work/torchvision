@@ -26,6 +26,7 @@ from .ps_roi_pool import ps_roi_pool, PSRoIPool
 from .roi_align import roi_align, RoIAlign
 from .roi_pool import roi_pool, RoIPool
 from .stochastic_depth import stochastic_depth, StochasticDepth
+from .multi_head_attention import MultiHeadAttention
 
 _register_custom_op()
 
@@ -70,4 +71,5 @@ __all__ = [
     "DropBlock2d",
     "drop_block3d",
     "DropBlock3d",
+    "MultiHeadAttention",
 ]

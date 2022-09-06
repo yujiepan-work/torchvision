@@ -12,7 +12,7 @@ from ..utils import _log_api_usage_once
 from ._api import WeightsEnum, Weights
 from ._meta import _IMAGENET_CATEGORIES
 from ._utils import handle_legacy_interface, _ovewrite_named_param
-
+from ..ops import MultiHeadAttention
 
 __all__ = [
     "VisionTransformer",
@@ -100,7 +100,10 @@ class EncoderBlock(nn.Module):
 
         # Attention block
         self.ln_1 = norm_layer(hidden_dim)
-        self.self_attention = nn.MultiheadAttention(hidden_dim, num_heads, dropout=attention_dropout, batch_first=True)
+        # self.self_attention = nn.MultiheadAttention(hidden_dim, num_heads, dropout=attention_dropout, batch_first=True)
+        self.self_attention = MultiHeadAttention(
+            hidden_dim, num_heads, dropout=attention_dropout, bias=True
+        )  # use huggingface implementation
         self.dropout = nn.Dropout(dropout)
 
         # MLP block
@@ -110,7 +113,8 @@ class EncoderBlock(nn.Module):
     def forward(self, input: torch.Tensor):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
         x = self.ln_1(input)
-        x, _ = self.self_attention(query=x, key=x, value=x, need_weights=False)
+        # x, _ = self.self_attention(query=x, key=x, value=x, need_weights=False)
+        x, _, _ = self.self_attention(x)
         x = self.dropout(x)
         x = x + input
 
@@ -332,7 +336,25 @@ def _vision_transformer(
     )
 
     if weights:
-        model.load_state_dict(weights.get_state_dict(progress=progress))
+        # modify torchvision weight names to fit for HuggingFace MultiHeadAttention implementation
+        state_dict = weights.get_state_dict(progress=progress)
+        state_dict_new = OrderedDict()
+        for key, value in state_dict.items():
+            if key.endswith("self_attention.in_proj_weight"):
+                q, k, v = value.chunk(3, dim=0)
+                key_prefix = key[: key.index("in_proj_weight")]
+                state_dict_new[key_prefix + "q_proj.weight"] = q
+                state_dict_new[key_prefix + "k_proj.weight"] = k
+                state_dict_new[key_prefix + "v_proj.weight"] = v
+            elif key.endswith("self_attention.in_proj_bias"):
+                q, k, v = value.chunk(3, dim=0)
+                key_prefix = key[: key.index("in_proj_bias")]
+                state_dict_new[key_prefix + "q_proj.bias"] = q
+                state_dict_new[key_prefix + "k_proj.bias"] = k
+                state_dict_new[key_prefix + "v_proj.bias"] = v
+            else:
+                state_dict_new[key] = value
+        model.load_state_dict(state_dict_new)
 
     return model
 
