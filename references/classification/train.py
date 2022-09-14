@@ -26,6 +26,8 @@ try:
 except ImportError:
     has_wandb = False
 
+EVAL_BEFORE_TRAIN = 0
+
 
 def train_one_epoch(
     model,
@@ -266,23 +268,40 @@ def main(args):
 
     print("Creating model")
     model = torchvision.models.__dict__[args.model](weights=args.weights, num_classes=num_classes)
-    # model = torchvision.models.resnet18(pretrained=True)
     model.to(device)
-    print(model)
 
     compression_ctrl = None
     if args.nncf_config is not None:
         nncf_config = NNCFConfig.from_json(args.nncf_config)
-        nncf_config['log_dir'] = args.output_dir
+        nncf_config["log_dir"] = args.output_dir
         if utils.is_main_process():
             shutil.copy(args.nncf_config, args.output_dir)
+
+        if args.manual_load is not None and "compression" in nncf_config:
+            # save the calibration time for manual load
+            override_qcfg_init = dict(
+                range=dict(num_init_samples=32), batchnorm_adaptation=dict(num_bn_adaptation_samples=32)
+            )
+            if isinstance(nncf_config["compression"], list):
+                for algo in nncf_config["compression"]:
+                    if algo["algorithm"] == "quantization":
+                        algo["initializer"].update(override_qcfg_init)
+            elif nncf_config["compression"]["algorithm"] == "quantization":
+                nncf_config["compression"]["initializer"].update(override_qcfg_init)
+
         nncf_config = register_default_init_args(
-            nncf_config=nncf_config, train_loader=data_loader
+            nncf_config=nncf_config, train_loader=data_loader, device=device
         )  # TODO: distributed_callbacks and execution_parameters
         compression_ctrl, model = create_compressed_model(model, nncf_config)
 
+        if args.manual_load is not None:
+            model.load_state_dict(torch.load(args.manual_load, map_location="cpu"))
+        for key in sorted(model.state_dict().keys()):
+            print(key)
+        torch.save(model.state_dict(), '/home/yujiepan/work2/jpqd-vit/LOGS/ptq_model/quant-only.bin')
+
     if args.distributed and args.sync_bn:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # TODO: nncf with syncBN
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)  # TODO: nncf with syncBN
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
@@ -359,6 +378,7 @@ def main(args):
         model_without_ddp = model.module
         if compression_ctrl:
             compression_ctrl.distributed()
+    print(model)
 
     model_ema = None
     if args.model_ema:
@@ -399,6 +419,10 @@ def main(args):
 
     print("Start training")
     start_time = time.time()
+    if EVAL_BEFORE_TRAIN:
+        print("Test model accuracy before the training starts.")
+        evaluate(model, criterion, data_loader_test, device=device, print_freq=args.print_freq)
+
     step_per_epoch = len(data_loader)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -598,6 +622,7 @@ def get_args_parser(add_help=True):
         "--max_steps", default=-1, type=int, help="max number of steps per epoch, -1 means disabled (default -1)"
     )
     parser.add_argument("--nncf_config", default=None, type=str, help="path to nncf config json file")
+    parser.add_argument("--manual_load", default=None, type=str, help="path to state dict of nncf wrapped model")
     return parser
 
 
