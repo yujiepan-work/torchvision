@@ -138,9 +138,13 @@ class Encoder(nn.Module):
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
     ):
         super().__init__()
+        self.seq_length = seq_length
+        self.hidden_dim = hidden_dim
         # Note that batch_size is on the first dim because
         # we have batch_first=True in nn.MultiAttention() by default
-        self.pos_embedding = nn.Parameter(torch.empty(1, seq_length, hidden_dim).normal_(std=0.02))  # from BERT
+        # self.pos_embedding = nn.Parameter(torch.empty(1, seq_length, hidden_dim).normal_(std=0.02))  # from BERT
+        self.pos_embedding_layer = nn.Embedding(seq_length, hidden_dim)
+        nn.init.normal_(self.pos_embedding_layer.weight, std=0.02)
         self.dropout = nn.Dropout(dropout)
         layers: OrderedDict[str, nn.Module] = OrderedDict()
         for i in range(num_layers):
@@ -157,7 +161,8 @@ class Encoder(nn.Module):
 
     def forward(self, input: torch.Tensor):
         torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
-        input = input + self.pos_embedding
+        pos_embedding = self.pos_embedding_layer(torch.arange(self.seq_length, device=input.device).unsqueeze(0))
+        input = input + pos_embedding
         return self.ln(self.layers(self.dropout(input)))
 
 
@@ -221,7 +226,8 @@ class VisionTransformer(nn.Module):
         seq_length = (image_size // patch_size) ** 2
 
         # Add a class token
-        self.class_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        # self.class_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.class_token_layer = nn.Embedding(1, hidden_dim)
         seq_length += 1
 
         self.encoder = Encoder(
@@ -268,6 +274,9 @@ class VisionTransformer(nn.Module):
         if isinstance(self.heads.head, nn.Linear):
             nn.init.zeros_(self.heads.head.weight)
             nn.init.zeros_(self.heads.head.bias)
+        
+        if isinstance(self.class_token_layer, nn.Embedding):
+            nn.init.zeros_(self.class_token_layer.weight)
 
     def _process_input(self, x: torch.Tensor) -> torch.Tensor:
         n, c, h, w = x.shape
@@ -296,7 +305,8 @@ class VisionTransformer(nn.Module):
         n = x.shape[0]
 
         # Expand the class token to the full batch
-        batch_class_token = self.class_token.expand(n, -1, -1)
+        class_token = self.class_token_layer(torch.zeros((1,1), dtype=torch.long, device=x.device))
+        batch_class_token = class_token.expand(n, -1, -1)
         x = torch.cat([batch_class_token, x], dim=1)
 
         x = self.encoder(x)
@@ -352,6 +362,10 @@ def _vision_transformer(
                 state_dict_new[key_prefix + "q_proj.bias"] = q
                 state_dict_new[key_prefix + "k_proj.bias"] = k
                 state_dict_new[key_prefix + "v_proj.bias"] = v
+            elif key.endswith("class_token"):
+                state_dict_new[key + "_layer.weight"] = value.squeeze(0)
+            elif key.endswith("encoder.pos_embedding"):
+                state_dict_new[key + "_layer.weight"] = value.squeeze(0)
             else:
                 state_dict_new[key] = value
         model.load_state_dict(state_dict_new)
