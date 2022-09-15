@@ -44,8 +44,8 @@ def train_one_epoch(
 ):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
-    metric_logger.add_meter("img/s", utils.SmoothedValue(window_size=10, fmt="{value}"))
+    metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value:.3e}"))
+    metric_logger.add_meter("img/s", utils.SmoothedValue(window_size=10, fmt="{value:.0f}"))
     header = f"Epoch: [{epoch}]"
 
     if compression_ctrl:
@@ -295,10 +295,9 @@ def main(args):
         compression_ctrl, model = create_compressed_model(model, nncf_config)
 
         if args.manual_load is not None:
-            model.load_state_dict(torch.load(args.manual_load, map_location="cpu"))
-        for key in sorted(model.state_dict().keys()):
-            print(key)
-        torch.save(model.state_dict(), '/home/yujiepan/work2/jpqd-vit/LOGS/ptq_model/quant-only.bin')
+            model.load_state_dict(torch.load(args.manual_load, map_location="cpu")["model"])
+            print(f"Loaded model state from: {args.manual_load}")
+        print("\n".join(sorted(model.state_dict().keys())))
 
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)  # TODO: nncf with syncBN
@@ -627,5 +626,15 @@ def get_args_parser(add_help=True):
 
 
 if __name__ == "__main__":
+    # TODO: a very bad but simple idea to log the timestamp, should delete at final codes
+    from datetime import datetime
+
+    _print = __builtins__.print
+
+    def print(*args, **kwargs):
+        _print(datetime.now().strftime("%m-%d %H:%M:%S"), *args, **kwargs)
+
+    __builtins__.print = print
+
     args = get_args_parser().parse_args()
     main(args)

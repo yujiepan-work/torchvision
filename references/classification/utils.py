@@ -165,6 +165,7 @@ class MetricLogger:
                         "train/epoch": global_step/step_per_epoch,
                         "train/lr": self.meters['lr'].value,
                         "train/loss": self.meters['loss'].value,
+                        "train/acc1": self.meters['acc1'].global_avg,
                         # "train/mem": memory_used
                     }
                     wandb.log(data=wandb_dict, step=global_step)
