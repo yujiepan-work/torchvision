@@ -317,6 +317,20 @@ def main(args):
         custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
     )
 
+    if int(os.environ.get("YUJIE_GLOBAL_LR", "1")) != 1:
+        assert len(parameters) == 1, "Currently we assume a global weight decay value."
+        importance_params = []
+        other_params = []
+        for name, parameter in model.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            if "importance" in name:
+                importance_params.append(parameter)
+            else:
+                other_params.append(parameter)
+        print(f"{len(importance_params)} importance params, {len(other_params)} other params.")
+        parameters = [{"params": importance_params, "lr": 0.001}, {"params": other_params}]
+
     opt_name = args.opt.lower()
     if opt_name.startswith("sgd"):
         optimizer = torch.optim.SGD(
