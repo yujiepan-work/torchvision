@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 import wandb
 
+
 class SmoothedValue:
     """Track a series of values and provide access to smoothed values over a
     window or the global series average.
@@ -104,10 +105,10 @@ class MetricLogger:
         if not header:
             header = ""
         else:
-            if 'Test' in header:
-                bTest=True
+            if "Test" in header:
+                bTest = True
             else:
-                epoch = int(header.split(']')[0].split('[')[-1])
+                epoch = int(header.split("]")[0].split("[")[-1])
                 step_per_epoch = len(iterable)
 
         start_time = time.time()
@@ -159,13 +160,16 @@ class MetricLogger:
                     )
 
                 if log_wandb is True and header is not None and bTest is False:
-                    global_step = epoch*step_per_epoch + i
+                    global_step = epoch * step_per_epoch + i
                     wandb_dict = {
                         "train/global_step": global_step,
-                        "train/epoch": global_step/step_per_epoch,
-                        "train/lr": self.meters['lr'].value,
-                        "train/loss": self.meters['loss'].value,
-                        "train/acc1": self.meters['acc1'].global_avg,
+                        "train/epoch": global_step / step_per_epoch,
+                        "train/lr": self.meters["lr"].value,
+                        "train/loss": self.meters["loss"].value,
+                        "train/acc1": self.meters["acc1"].global_avg,
+                        "train/importance_regularization_factor": self.meters["importance_regularization_factor"].value,
+                        "train/importance_threshold": self.meters["importance_threshold"].value,
+                        "train/relative_sparsity": self.meters["relative_sparsity"].value,
                         # "train/mem": memory_used
                     }
                     wandb.log(data=wandb_dict, step=global_step)

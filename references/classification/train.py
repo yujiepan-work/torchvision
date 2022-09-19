@@ -90,6 +90,12 @@ def train_one_epoch(
         acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+        movement_ctrl_statistics = compression_ctrl.statistics().movement_sparsity
+        metric_logger.update(
+            importance_regularization_factor=movement_ctrl_statistics.importance_regularization_factor,
+            importance_threshold=movement_ctrl_statistics.importance_threshold,
+            relative_sparsity=movement_ctrl_statistics.model_statistics.sparsity_level_for_layers,
+        )
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
         metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
         metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
@@ -99,13 +105,14 @@ def train_one_epoch(
 
 
 def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
+    # return 0.5, 0.9, 1.8
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"Test: {log_suffix}"
 
     num_processed_samples = 0
     with torch.inference_mode():
-        for image, target in metric_logger.log_every(data_loader, print_freq, header):
+        for i, (image, target) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
             image = image.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
             output = model(image)
@@ -119,6 +126,9 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
             metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
             num_processed_samples += batch_size
+
+            # if args.max_steps > 0 and i >= args.max_steps:
+            #     break
     # gather the stats from all processes
 
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
