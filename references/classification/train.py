@@ -423,6 +423,7 @@ def main(args):
         evaluate(model, criterion, data_loader_test, device=device, print_freq=args.print_freq)
 
     step_per_epoch = len(data_loader)
+    hasfilled = False
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -484,6 +485,32 @@ def main(args):
                 checkpoint["scaler"] = scaler.state_dict()
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+
+        if hasfilled is False:
+            if hasattr(compression_ctrl, "child_ctrls"):
+                mvmt_ctrl = compression_ctrl.child_ctrls[0]  # TODO: index 0
+            else:
+                mvmt_ctrl = compression_ctrl
+
+            if mvmt_ctrl.__class__.__name__ == "MovementSparsityController":
+                if mvmt_ctrl.scheduler.current_epoch >= mvmt_ctrl.scheduler.warmup_end_epoch:
+                    # mvmt_ctrl.report_structured_sparsity(os.path.join(self.args.output_dir, "1-pre"))
+                    print("reset_independent_structured_mask")
+                    mvmt_ctrl.reset_independent_structured_mask()
+                    # mvmt_ctrl.report_structured_sparsity(os.path.join(self.args.output_dir, "2-reset"))
+                    print("resolve_structured_mask")
+                    mvmt_ctrl.resolve_structured_mask()
+                    pth = os.path.join(args.output_dir, "3-resolve")
+                    os.makedirs(pth, exist_ok=True)
+                    mvmt_ctrl.report_structured_sparsity(pth)
+
+                    print("populate_structured_mask")
+                    mvmt_ctrl.populate_structured_mask()
+                    pth = os.path.join(args.output_dir, "4-pop")
+                    os.makedirs(pth, exist_ok=True)
+                    mvmt_ctrl.report_structured_sparsity(pth)
+
+                    hasfilled = True
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -627,14 +654,13 @@ def get_args_parser(add_help=True):
 
 if __name__ == "__main__":
     # TODO: a very bad but simple idea to log the timestamp, should delete at final codes
-    from datetime import datetime
+    if False:
+        _print = __builtins__.print
 
-    _print = __builtins__.print
+        def print(*args, **kwargs):
+            _print(datetime.datetime.now().strftime("%m-%d %H:%M:%S"), *args, **kwargs)
 
-    def print(*args, **kwargs):
-        _print(datetime.now().strftime("%m-%d %H:%M:%S"), *args, **kwargs)
-
-    __builtins__.print = print
+        __builtins__.print = print
 
     args = get_args_parser().parse_args()
     main(args)
