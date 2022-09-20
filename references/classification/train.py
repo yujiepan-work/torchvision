@@ -89,7 +89,9 @@ def train_one_epoch(
 
         acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
-        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(
+            loss=loss.item(), lr=optimizer.param_groups[0]["lr"]
+        )  # TODO: first lr group is about importance score if global-lr is false
         movement_ctrl_statistics = compression_ctrl.statistics().movement_sparsity
         metric_logger.update(
             importance_regularization_factor=movement_ctrl_statistics.importance_regularization_factor,
@@ -307,6 +309,8 @@ def main(args):
         if args.manual_load is not None:
             model.load_state_dict(torch.load(args.manual_load, map_location="cpu")["model"])
             print(f"Loaded model state from: {args.manual_load}")
+        # else:
+        #     torch.save({'model': model.state_dict()}, '/home/yujiepan/work2/jpqd-vit/LOGS/ptq_model/jpq-pytorch.v3-512.bin')
         print("\n".join(sorted(model.state_dict().keys())))
 
     if args.distributed and args.sync_bn:
