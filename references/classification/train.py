@@ -521,7 +521,7 @@ def main(args):
                 mvmt_ctrl = compression_ctrl
 
             if mvmt_ctrl.__class__.__name__ == "MovementSparsityController":
-                if mvmt_ctrl.scheduler.current_epoch >= mvmt_ctrl.scheduler.warmup_end_epoch:
+                if mvmt_ctrl.scheduler.current_epoch + 1 >= mvmt_ctrl.scheduler.warmup_end_epoch:
                     # mvmt_ctrl.report_structured_sparsity(os.path.join(self.args.output_dir, "1-pre"))
                     print("reset_independent_structured_mask")
                     mvmt_ctrl.reset_independent_structured_mask()
@@ -531,12 +531,14 @@ def main(args):
                     pth = os.path.join(args.output_dir, "3-resolve")
                     os.makedirs(pth, exist_ok=True)
                     mvmt_ctrl.report_structured_sparsity(pth)
+                    utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, 'model_resolve.pth'))
 
                     print("populate_structured_mask")
                     mvmt_ctrl.populate_structured_mask()
                     pth = os.path.join(args.output_dir, "4-pop")
                     os.makedirs(pth, exist_ok=True)
                     mvmt_ctrl.report_structured_sparsity(pth)
+                    utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, 'model_pop.pth'))
 
                     hasfilled = True
 
