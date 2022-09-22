@@ -408,7 +408,8 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True) 
+        # TODO: find_unused_parameters will cause slow training.
         model_without_ddp = model.module
         if compression_ctrl:
             compression_ctrl.distributed()
