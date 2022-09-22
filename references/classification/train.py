@@ -102,9 +102,6 @@ def train_one_epoch(
         metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
         metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
 
-        if args.max_steps > 0 and i >= args.max_steps:
-            break
-
 
 def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
     # return 0.5, 0.9, 1.8
@@ -129,10 +126,7 @@ def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix="
             metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
             num_processed_samples += batch_size
 
-            # if args.max_steps > 0 and i >= args.max_steps:
-            #     break
     # gather the stats from all processes
-
     num_processed_samples = utils.reduce_across_processes(num_processed_samples)
     if (
         hasattr(data_loader.dataset, "__len__")
@@ -217,6 +211,13 @@ def load_data(traindir, valdir, args):
             utils.mkdir(os.path.dirname(cache_path))
             utils.save_on_master((dataset_test, valdir), cache_path)
 
+    if args.max_steps > 0:
+        n_gpu = torch.distributed.get_world_size()  if args.distributed else torch.cuda.device_count() # TODO: not tested
+        subset_length = args.max_steps  * args.batch_size * n_gpu
+        print(f'Reduce dataset size for train: {len(dataset)}->{subset_length}, val: {len(dataset_test)}->{subset_length}.')
+        dataset.__class__.__len__ = lambda _: subset_length
+        dataset_test.__class__.__len__ = lambda _: subset_length
+
     print("Creating data loaders")
     if args.distributed:
         if hasattr(args, "ra_sampler") and args.ra_sampler:
@@ -289,21 +290,27 @@ def main(args):
         if utils.is_main_process():
             shutil.copy(args.nncf_config, args.output_dir)
 
-        if args.manual_load is not None and "compression" in nncf_config:
+        if (args.manual_load is not None or args.max_steps > 0) and "compression" in nncf_config:
             # save the calibration time for manual load
             override_qcfg_init = dict(
                 range=dict(num_init_samples=32), batchnorm_adaptation=dict(num_bn_adaptation_samples=32)
             )
+            override_pcfg_param = dict(steps_per_epoch=args.max_steps)
             if isinstance(nncf_config["compression"], list):
                 for algo in nncf_config["compression"]:
                     if algo["algorithm"] == "quantization":
                         algo["initializer"].update(override_qcfg_init)
+                    if algo["algorithm"] == "movement_sparsity" and args.max_steps > 0:
+                        algo["params"].update(override_pcfg_param)
             elif nncf_config["compression"]["algorithm"] == "quantization":
                 nncf_config["compression"]["initializer"].update(override_qcfg_init)
+            elif nncf_config["compression"]["algorithm"] == "movement_sparsity" and args.max_steps > 0:
+                nncf_config["compression"]["params"].update(override_pcfg_param)
 
         nncf_config = register_default_init_args(
             nncf_config=nncf_config, train_loader=data_loader, device=device
         )  # TODO: distributed_callbacks and execution_parameters
+        print(nncf_config)
         compression_ctrl, model = create_compressed_model(model, nncf_config)
 
         if args.manual_load is not None:
@@ -531,14 +538,14 @@ def main(args):
                     pth = os.path.join(args.output_dir, "3-resolve")
                     os.makedirs(pth, exist_ok=True)
                     mvmt_ctrl.report_structured_sparsity(pth)
-                    utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, 'model_resolve.pth'))
+                    utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, "model_resolve.pth"))
 
                     print("populate_structured_mask")
                     mvmt_ctrl.populate_structured_mask()
                     pth = os.path.join(args.output_dir, "4-pop")
                     os.makedirs(pth, exist_ok=True)
                     mvmt_ctrl.report_structured_sparsity(pth)
-                    utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, 'model_pop.pth'))
+                    utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, "model_pop.pth"))
 
                     hasfilled = True
 
