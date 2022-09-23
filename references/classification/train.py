@@ -61,16 +61,14 @@ def train_one_epoch(
         with torch.cuda.amp.autocast(enabled=scaler is not None):
             output = model(image)
             loss_main = criterion(output, target)
-            loss = loss_main
+            loss_dict = dict(loss_main=loss_main)
             if compression_ctrl:
-                compression_loss_dict = {}
                 if not hasattr(compression_ctrl, "child_ctrls"):
-                    compression_loss_dict["loss_compress"] = compression_ctrl.loss()
+                    loss_dict["loss_compress"] = compression_ctrl.loss()
                 else:
                     for child_ctrl in compression_ctrl.child_ctrls:
-                        compression_loss_dict["loss_" + child_ctrl.name] = child_ctrl.loss()
-                compression_loss = sum(compression_loss_dict.values())
-                loss = loss + compression_loss  # do not use `+=` operator otherwise `main_loss` is also changed
+                        loss_dict["loss_" + child_ctrl.name] = child_ctrl.loss()
+            loss = sum(loss_dict.values())
 
         optimizer.zero_grad()
         if scaler is not None:
@@ -96,10 +94,10 @@ def train_one_epoch(
         acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
         metric_logger.update(
-            loss_main=loss_main.item(), loss=loss.item(), lr=optimizer.param_groups[0]["lr"]
+            loss=loss.item(), lr=optimizer.param_groups[0]["lr"]
         )  # TODO: first lr group is about importance score if global-lr is false
         if compression_ctrl:
-            for loss_name, loss_value in compression_loss_dict.items():
+            for loss_name, loss_value in loss_dict.items():
                 metric_logger.meters[loss_name].update(loss_value.item())
         movement_ctrl_statistics = compression_ctrl.statistics().movement_sparsity
         metric_logger.update(
