@@ -532,8 +532,8 @@ def main(args):
                 checkpoint["scaler"] = scaler.state_dict()
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-            if (compression_ctrl is not None) and utils.is_main_process():
-                compression_ctrl.export_model(os.path.join(args.output_dir, f"model_{epoch}.onnx"))
+            if compression_ctrl is not None:  # and utils.is_main_process():
+                compression_ctrl.export_model(os.path.join(args.output_dir, f"model_{epoch}_{utils.get_rank()}.onnx"))
 
         if hasfilled is False:
             if hasattr(compression_ctrl, "child_ctrls"):
@@ -560,8 +560,7 @@ def main(args):
                     os.makedirs(pth, exist_ok=True)
                     mvmt_ctrl.report_structured_sparsity(pth)
                     utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, "model_pop.pth"))
-                    if utils.is_main_process():
-                        compression_ctrl.export_model(os.path.join(pth, "model_pop.onnx"))
+                    compression_ctrl.export_model(os.path.join(pth, f"model_pop_{utils.get_rank()}.onnx"))
                     hasfilled = True
 
     total_time = time.time() - start_time
