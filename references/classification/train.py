@@ -6,6 +6,7 @@ import warnings
 import presets
 import torch
 import torch.utils.data
+import torch.nn.functional as F
 import torchvision
 import transforms
 import utils
@@ -29,9 +30,26 @@ except ImportError:
 EVAL_BEFORE_TRAIN = 0
 
 
+class TeacherLoss(nn.Module):
+    def __init__(self, scale=10.0, temperature=2.0, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scale = scale
+        self.distill_temperature = temperature
+
+    def forward(self, logits_student, logits_teacher):
+        teacher_loss = F.kl_div(
+            input=F.log_softmax(logits_student / self.distill_temperature, dim=-1),
+            target=F.softmax(logits_teacher / self.distill_temperature, dim=-1),
+            reduction="batchmean",
+        ) * (self.distill_temperature**2)
+        return teacher_loss * self.scale
+
+
 def train_one_epoch(
     model,
+    teacher,
     criterion,
+    teacher_criterion,
     optimizer,
     data_loader,
     device,
@@ -62,6 +80,11 @@ def train_one_epoch(
             output = model(image)
             loss_main = criterion(output, target)
             loss_dict = dict(loss_main=loss_main)
+            if teacher:
+                with torch.no_grad():
+                    output_teacher = teacher(image)
+                loss_teacher = teacher_criterion(output, output_teacher)
+                loss_dict['loss_teacher'] = loss_teacher
             if compression_ctrl:
                 if not hasattr(compression_ctrl, "child_ctrls"):
                     loss_dict["loss_compress"] = compression_ctrl.loss()
@@ -294,6 +317,16 @@ def main(args):
     model = torchvision.models.__dict__[args.model](weights=args.weights, num_classes=num_classes)
     model.to(device)
 
+    teacher = None
+    teacher_criterion = None
+    if args.teacher is not None:
+        assert args.teacher_weights is not None, "Please provide teacher weights."
+        teacher = torchvision.models.__dict__[args.teacher](weights=args.teacher_weights, num_classes=num_classes)
+        for param in teacher.parameters():
+            param.requires_grad_(False)
+        teacher.to(device).eval()
+        teacher_criterion = TeacherLoss(scale=10.0, temperature=2.0).to(device)
+
     compression_ctrl = None
     if args.nncf_config is not None:
         nncf_config = NNCFConfig.from_json(args.nncf_config)
@@ -476,7 +509,9 @@ def main(args):
             train_sampler.set_epoch(epoch)
         train_one_epoch(
             model=model,
+            teacher=teacher,
             criterion=criterion,
+            teacher_criterion=teacher_criterion,
             optimizer=optimizer,
             data_loader=data_loader,
             device=device,
@@ -700,6 +735,8 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument("--nncf_config", default=None, type=str, help="path to nncf config json file")
     parser.add_argument("--manual_load", default=None, type=str, help="path to state dict of nncf wrapped model")
+    parser.add_argument("--teacher", default=None, type=str, help="teacher model name")
+    parser.add_argument("--teacher_weights", default=None, type=str, help="the weights enum name to load for teacher")
     return parser
 
 
