@@ -60,10 +60,16 @@ def train_one_epoch(
 
         with torch.cuda.amp.autocast(enabled=scaler is not None):
             output = model(image)
-            main_loss = criterion(output, target)
-            loss = main_loss
+            loss_main = criterion(output, target)
+            loss = loss_main
             if compression_ctrl:
-                compression_loss = compression_ctrl.loss()
+                compression_loss_dict = {}
+                if not hasattr(compression_ctrl, "child_ctrls"):
+                    compression_loss_dict["loss_compress"] = compression_ctrl.loss()
+                else:
+                    for child_ctrl in compression_ctrl.child_ctrls:
+                        compression_loss_dict["loss_" + child_ctrl.name] = child_ctrl.loss()
+                compression_loss = sum(compression_loss_dict.values())
                 loss = loss + compression_loss  # do not use `+=` operator otherwise `main_loss` is also changed
 
         optimizer.zero_grad()
@@ -90,8 +96,11 @@ def train_one_epoch(
         acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         batch_size = image.shape[0]
         metric_logger.update(
-            loss=loss.item(), lr=optimizer.param_groups[0]["lr"]
+            loss_main=loss_main.item(), loss=loss.item(), lr=optimizer.param_groups[0]["lr"]
         )  # TODO: first lr group is about importance score if global-lr is false
+        if compression_ctrl:
+            for loss_name, loss_value in compression_loss_dict.items():
+                metric_logger.meters[loss_name].update(loss_value.item())
         movement_ctrl_statistics = compression_ctrl.statistics().movement_sparsity
         metric_logger.update(
             importance_regularization_factor=movement_ctrl_statistics.importance_regularization_factor,
@@ -212,9 +221,13 @@ def load_data(traindir, valdir, args):
             utils.save_on_master((dataset_test, valdir), cache_path)
 
     if args.max_steps > 0:
-        n_gpu = torch.distributed.get_world_size()  if args.distributed else torch.cuda.device_count() # TODO: not tested
-        subset_length = args.max_steps  * args.batch_size * n_gpu
-        print(f'Reduce dataset size for train: {len(dataset)}->{subset_length}, val: {len(dataset_test)}->{subset_length}.')
+        n_gpu = (
+            torch.distributed.get_world_size() if args.distributed else torch.cuda.device_count()
+        )  # TODO: not tested
+        subset_length = args.max_steps * args.batch_size * n_gpu
+        print(
+            f"Reduce dataset size for train: {len(dataset)}->{subset_length}, val: {len(dataset_test)}->{subset_length}."
+        )
         dataset.__class__.__len__ = lambda _: subset_length
         dataset_test.__class__.__len__ = lambda _: subset_length
 
@@ -408,7 +421,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True) 
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         # TODO: find_unused_parameters will cause slow training.
         model_without_ddp = model.module
         if compression_ctrl:

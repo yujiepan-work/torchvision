@@ -172,6 +172,9 @@ class MetricLogger:
                         "train/relative_sparsity": self.meters["relative_sparsity"].value,
                         # "train/mem": memory_used
                     }
+                    for key in self.meters:
+                        if str(key).startswith("loss_"):
+                            wandb_dict[f"train/{key}"] = self.meters[key].value
                     wandb.log(data=wandb_dict, step=global_step)
 
             i += 1
