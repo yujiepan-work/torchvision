@@ -222,7 +222,7 @@ def load_data(traindir, valdir, args):
 
     if args.max_steps > 0:
         n_gpu = (
-            torch.distributed.get_world_size() if args.distributed else torch.cuda.device_count()
+            torch.distributed.get_world_size() if args.distributed else max(1, torch.cuda.device_count())
         )  # TODO: not tested
         subset_length = args.max_steps * args.batch_size * n_gpu
         print(
@@ -534,6 +534,8 @@ def main(args):
                 checkpoint["scaler"] = scaler.state_dict()
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+            if (compression_ctrl is not None) and utils.is_main_process():
+                compression_ctrl.export_model(os.path.join(args.output_dir, f"model_{epoch}.onnx"))
 
         if hasfilled is False:
             if hasattr(compression_ctrl, "child_ctrls"):
@@ -560,7 +562,8 @@ def main(args):
                     os.makedirs(pth, exist_ok=True)
                     mvmt_ctrl.report_structured_sparsity(pth)
                     utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, "model_pop.pth"))
-
+                    if utils.is_main_process():
+                        compression_ctrl.export_model(os.path.join(pth, "model_pop.onnx"))
                     hasfilled = True
 
     total_time = time.time() - start_time
@@ -705,7 +708,7 @@ def get_args_parser(add_help=True):
 
 if __name__ == "__main__":
     # TODO: a very bad but simple idea to log the timestamp, should delete at final codes
-    if False:
+    if 1:
         _print = __builtins__.print
 
         def print(*args, **kwargs):
