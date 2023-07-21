@@ -1,0 +1,72 @@
+{
+  "input_info": [
+    {
+      "sample_size": [1, 3, 224, 224]
+    }
+  ],
+  // "ignored_scopes": [
+  //   "VisionTransformer/NNCFConv2d[conv_proj]/conv2d_0",
+  //   "VisionTransformer/Sequential[heads]/NNCFLinear[head]/linear_0"
+  // ],
+  "compression": [
+    {
+      "algorithm": "movement_sparsity",
+      "params": {
+        "schedule": "modified_threshold_polynomial_decay",
+        "power": 3,
+        "warmup_start_epoch": 2,
+        "warmup_end_epoch": 9,
+        "warmup_start_scale": 0.0,
+        "warmup_end_scale": 1.0,
+        "importance_threshold": 0.0,
+        "importance_threshold_warmup_start": -1.0,
+        "importance_regularization_factor": 0.041,
+        "do_threshold_warmup": true,
+        "do_regularization_factor_warmup": true,
+        "steps_per_epoch": 2502,
+        "update_per_optimizer_step": true
+      },
+      "sparse_structure_by_scopes": [
+        ["block", [32, 32], "{re}.*MultiHeadAttention*"],
+        ["per_dim", [0], "{re}.*MLPBlock.mlp./NNCFLinear.0"],
+        ["per_dim", [1], "{re}.*MLPBlock.mlp./NNCFLinear.3"]
+      ],
+      "ignored_scopes": [
+        "{re}.*VisionTransformer/NNCFConv2d.conv_proj.*",
+        "{re}.*VisionTransformer/Sequential.heads.*",
+        "{re}.*class_token_layer.*",
+        "{re}.*pos_embedding_layer.*"
+      ]
+    },
+    {
+      "algorithm": "quantization",
+      "initializer": {
+        "range": {
+          "num_init_samples": 512,
+          "type": "percentile",
+          "params": {
+            "min_percentile": 0.01,
+            "max_percentile": 99.99
+          }
+        },
+        "batchnorm_adaptation": {
+          "num_bn_adaptation_samples": 256
+        }
+      },
+      "activations": {
+        "mode": "symmetric"
+      },
+      "weights": {
+        "mode": "symmetric",
+        "signed": true,
+        "per_channel": false
+      }
+    },
+    // {
+    //   "algorithm": "knowledge_distillation",
+    //   "type": "softmax",
+    //   "scale": 1,
+    //   "temperature": 2
+    // }
+  ]
+}
