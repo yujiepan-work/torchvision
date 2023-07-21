@@ -27,9 +27,7 @@ try:
 except ImportError:
     has_wandb = False
 
-EVAL_BEFORE_TRAIN = 0
-
-BEST_ACC1 = [0.0]
+EVAL_BEFORE_TRAIN = 1
 
 
 class TeacherLoss(nn.Module):
@@ -62,6 +60,7 @@ def train_one_epoch(
     log_wandb=False,
     compression_ctrl=None,
 ):
+    # return
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value:.3e}"))
@@ -71,44 +70,59 @@ def train_one_epoch(
     if compression_ctrl:
         compression_ctrl.scheduler.epoch_step()
 
-    for i, (image, target) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header, log_wandb)):
+    class RandDataset(torch.utils.data.Dataset):
+        def __init__(self) -> None:
+            super().__init__()
+        
+        def __len__(self):
+            return len(data_loader) * 128
+        
+        def __getitem__(self, i):
+            return (i, i)
+    
+    fake_data_loader = torch.utils.data.DataLoader(RandDataset(), batch_size=128)
+
+    for i, (image, target) in enumerate(fake_data_loader):
         start_time = time.time()
-        image, target = image.to(device), target.to(device)
+        # image, target = image.to(device), target.to(device)
 
         if compression_ctrl:
             compression_ctrl.scheduler.step()
 
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
-            output = model(image)
-            loss_main = criterion(output, target)
-            loss_dict = dict(loss_main=loss_main)
-            if teacher:
-                with torch.no_grad():
-                    output_teacher = teacher(image)
-                loss_teacher = teacher_criterion(output, output_teacher)
-                loss_dict["loss_teacher"] = loss_teacher
-            if compression_ctrl:
-                if not hasattr(compression_ctrl, "child_ctrls"):
-                    loss_dict["loss_compress"] = compression_ctrl.loss()
-                else:
-                    for child_ctrl in compression_ctrl.child_ctrls:
-                        loss_dict["loss_" + child_ctrl.name] = child_ctrl.loss()
-            loss = sum(loss_dict.values())
+        if i > 10:
+            continue
 
-        optimizer.zero_grad()
-        if scaler is not None:
-            scaler.scale(loss).backward()
-            if args.clip_grad_norm is not None:
-                # we should unscale the gradients of optimizer's assigned params if do gradient clipping
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            if args.clip_grad_norm is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            optimizer.step()
+        # with torch.cuda.amp.autocast(enabled=scaler is not None):
+        #     output = model(image)
+        #     loss_main = criterion(output, target)
+        #     loss_dict = dict(loss_main=loss_main)
+        #     if teacher:
+        #         with torch.no_grad():
+        #             output_teacher = teacher(image)
+        #         loss_teacher = teacher_criterion(output, output_teacher)
+        #         loss_dict['loss_teacher'] = loss_teacher
+        #     if compression_ctrl:
+        #         if not hasattr(compression_ctrl, "child_ctrls"):
+        #             loss_dict["loss_compress"] = compression_ctrl.loss()
+        #         else:
+        #             for child_ctrl in compression_ctrl.child_ctrls:
+        #                 loss_dict["loss_" + child_ctrl.name] = child_ctrl.loss()
+        #     loss = sum(loss_dict.values())
+
+        # optimizer.zero_grad()
+        # if scaler is not None:
+        #     scaler.scale(loss).backward()
+        #     if args.clip_grad_norm is not None:
+        #         # we should unscale the gradients of optimizer's assigned params if do gradient clipping
+        #         scaler.unscale_(optimizer)
+        #         nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+        #     scaler.step(optimizer)
+        #     scaler.update()
+        # else:
+        #     loss.backward()
+        #     if args.clip_grad_norm is not None:
+        #         nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+        #     optimizer.step()
 
         if model_ema and i % args.model_ema_steps == 0:
             model_ema.update_parameters(model)
@@ -116,26 +130,29 @@ def train_one_epoch(
                 # Reset ema buffer to keep copying weights during warmup period
                 model_ema.n_averaged.fill_(0)
 
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
-        batch_size = image.shape[0]
+        # acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+        batch_size = 128
         metric_logger.update(
-            loss=loss.item(), lr=optimizer.param_groups[0]["lr"]
+            loss=0.0, lr=optimizer.param_groups[0]["lr"]
         )  # TODO: first lr group is about importance score if global-lr is false
-        if compression_ctrl:
-            for loss_name, loss_value in loss_dict.items():
-                metric_logger.meters[loss_name].update(loss_value.item())
+        # if compression_ctrl:
+        #     for loss_name, loss_value in loss_dict.items():
+        #         metric_logger.meters[loss_name].update(loss_value.item())
         movement_ctrl_statistics = compression_ctrl.statistics().movement_sparsity
         metric_logger.update(
             importance_regularization_factor=movement_ctrl_statistics.importance_regularization_factor,
             importance_threshold=movement_ctrl_statistics.importance_threshold,
             relative_sparsity=movement_ctrl_statistics.model_statistics.sparsity_level_for_layers,
         )
-        metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
-        metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
-        metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
+        metric_logger.meters["acc1"].update(0, n=batch_size)
+        metric_logger.meters["acc5"].update(0, n=batch_size)
+        metric_logger.meters["img/s"].update(128 / (time.time() - start_time+1))
+        print(movement_ctrl_statistics.model_statistics.sparsity_level_for_layers)
 
 
 def evaluate(model, criterion, data_loader, device, print_freq=100, log_suffix=""):
+    if model is None:
+        return 0, 0, 0
     # return 0.5, 0.9, 1.8
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -339,7 +356,7 @@ def main(args):
         if (args.manual_load is not None or args.max_steps > 0) and "compression" in nncf_config:
             # save the calibration time for manual load
             override_qcfg_init = dict(
-                range=dict(num_init_samples=32), batchnorm_adaptation=dict(num_bn_adaptation_samples=32)
+                range=dict(num_init_samples=4), batchnorm_adaptation=dict(num_bn_adaptation_samples=4)
             )
             override_pcfg_param = dict(steps_per_epoch=args.max_steps)
             if isinstance(nncf_config["compression"], list):
@@ -362,6 +379,15 @@ def main(args):
         if args.manual_load is not None:
             model.load_state_dict(torch.load(args.manual_load, map_location="cpu")["model"])
             print(f"Loaded model state from: {args.manual_load}")
+            # the bianry masks are finalized. So simply freeze them
+            if hasattr(compression_ctrl, "child_ctrls"):
+                mvmt_ctrl = compression_ctrl.child_ctrls[0]  # TODO: index 0, hard coded. 
+            else:
+                mvmt_ctrl = compression_ctrl
+            mvmt_ctrl.scheduler._disable_importance_grad()
+            # mvmt_ctrl.reset_independent_structured_mask()
+            # mvmt_ctrl.resolve_structured_mask()
+            # mvmt_ctrl.populate_structured_mask()
         # else:
         #     torch.save({'model': model.state_dict()}, '/home/yujiepan/work2/jpqd-vit/LOGS/ptq_model/jpq-pytorch.v3-512.bin')
         print("\n".join(sorted(model.state_dict().keys())))
@@ -507,6 +533,7 @@ def main(args):
     step_per_epoch = len(data_loader)
     hasfilled = False
     for epoch in range(args.start_epoch, args.epochs):
+        print('[epoch]', epoch)
         if args.distributed:
             train_sampler.set_epoch(epoch)
         train_one_epoch(
@@ -525,8 +552,11 @@ def main(args):
             compression_ctrl=compression_ctrl,
         )
         lr_scheduler.step()
+        model_x = model
+        if epoch == 0:
+            model_x = None
         eval_acc1, eval_acc5, eval_loss = evaluate(
-            model, criterion, data_loader_test, device=device, print_freq=args.print_freq
+            model_x, criterion, data_loader_test, device=device, print_freq=args.print_freq
         )
 
         if log_wandb is True:
@@ -569,15 +599,8 @@ def main(args):
                 checkpoint["scaler"] = scaler.state_dict()
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
             utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-            
-            if eval_acc1 > BEST_ACC1[0] and epoch >= 8:
-                BEST_ACC1[0] = eval_acc1
-
-            if compression_ctrl is not None:
-                if epoch in [0, 1, 2, 7, 8, 9, 10] or (epoch > 25 and abs(BEST_ACC1[0] - eval_acc1) < 1e-4):
-                    compression_ctrl.export_model(
-                        os.path.join(args.output_dir, f"model_{epoch}_{utils.get_rank()}.onnx")
-                    )
+            # if compression_ctrl is not None:  # and utils.is_main_process():
+            #     compression_ctrl.export_model(os.path.join(args.output_dir, f"model_{epoch}_{utils.get_rank()}.onnx"))
 
         if hasfilled is False:
             if hasattr(compression_ctrl, "child_ctrls"):
@@ -586,7 +609,7 @@ def main(args):
                 mvmt_ctrl = compression_ctrl
 
             if mvmt_ctrl.__class__.__name__ == "MovementSparsityController":
-                if mvmt_ctrl.scheduler.current_epoch + 1 >= mvmt_ctrl.scheduler.fill_stage_epoch:
+                if epoch + 1 >= mvmt_ctrl.scheduler.warmup_end_epoch or 1:
                     # mvmt_ctrl.report_structured_sparsity(os.path.join(self.args.output_dir, "1-pre"))
                     print("reset_independent_structured_mask")
                     mvmt_ctrl.reset_independent_structured_mask()
@@ -604,8 +627,23 @@ def main(args):
                     os.makedirs(pth, exist_ok=True)
                     mvmt_ctrl.report_structured_sparsity(pth)
                     utils.save_on_master({"model": model.state_dict()}, os.path.join(pth, "model_pop.pth"))
-                    compression_ctrl.export_model(os.path.join(pth, f"model_pop_{utils.get_rank()}.onnx"))
+                    # compression_ctrl.export_model(os.path.join(pth, f"model_pop_{utils.get_rank()}.onnx"))
                     hasfilled = True
+
+                    best_sd = torch.load('/nvme2/yujiepan/workspace/jpqd-vit/LOGS/ww42/1012.689a-vit-jpqnd-wt0wr0.060-prune2to7f8-epo45lr5e-5wd1e-6_2card/model_43.pth', map_location='cpu')['model']
+                    cur_sd = model.state_dict()
+                    new_sd = dict()
+                    for k, v in cur_sd.items():
+                        if k.endswith('.weight') or k.endswith('.bias'):
+                            if 'module.' + k in best_sd:
+                                new_sd[k] = best_sd['module.' + k]
+                            else:
+                                new_sd[k] = best_sd[k]
+                        else:
+                            new_sd[k] = v.cpu()
+                    model.load_state_dict(new_sd)
+                    model.to(device)
+                    print('Loaded!!!')
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
